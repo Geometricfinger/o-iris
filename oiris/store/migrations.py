@@ -1,0 +1,64 @@
+"""Ordered, append-only schema migrations. Never edit a shipped migration; add a new one.
+The DB records `PRAGMA user_version`; startup applies anything newer inside a transaction."""
+MIGRATIONS: list[tuple[int, str]] = [
+    (1, """
+    CREATE TABLE session(id TEXT PRIMARY KEY, t_wall REAL, consent_id TEXT, site_code TEXT, gps_policy TEXT);
+    CREATE TABLE audit_log(id INTEGER PRIMARY KEY, t_wall REAL, kind TEXT, detail TEXT);
+    CREATE TABLE signature_event(id TEXT PRIMARY KEY, t_wall REAL, code TEXT, level TEXT, score REAL, body BLOB);
+    CREATE TABLE fusion_result(id INTEGER PRIMARY KEY, t_wall REAL, anomaly_index REAL, body BLOB);
+    """),
+    (2, """
+    CREATE TABLE sighting(sighting_id TEXT PRIMARY KEY, t_wall REAL, codes TEXT, body BLOB, verdict TEXT,
+        chain_idx INTEGER, h_prev BLOB, h_this BLOB, keep INTEGER DEFAULT 0);
+    CREATE TABLE sweep(sweep_id TEXT PRIMARY KEY, site_code TEXT, t_wall REAL, t_end REAL, body BLOB, outcome TEXT, keep INTEGER DEFAULT 0);
+    CREATE TABLE site(site_code TEXT PRIMARY KEY, name TEXT, anchors TEXT);
+    CREATE TABLE emitter_baseline(site_code TEXT, emitter_key TEXT, features_json TEXT, n_windows INTEGER, built_utc REAL,
+        PRIMARY KEY(site_code, emitter_key));
+    CREATE TABLE emitter_drift(emitter_key TEXT, t_wall REAL, changed_features TEXT, windows INTEGER);
+    """),
+    (3, """
+    CREATE TABLE eye_trace(run_id TEXT, t_wall REAL, t_mono_ns INTEGER, pupil_mm REAL, blink INTEGER, glint_n INTEGER,
+        glint_offset_px REAL, glint_code_ok INTEGER, quality REAL);
+    CREATE TABLE voice_event(run_id TEXT, t_wall REAL, prompt_id TEXT, spoof_score REAL, embed_sim REAL, enrolled INTEGER);
+    CREATE TABLE enrollment(subject_code TEXT, kind TEXT, embedding_enc BLOB, created_utc REAL, delete_after_utc REAL);
+    CREATE TABLE golden_clip(clip_id TEXT PRIMARY KEY, split TEXT, label TEXT, sha256 TEXT, source_sighting TEXT,
+        consent_ok INTEGER, manifest_version INTEGER);
+    CREATE TABLE chain_anchor(idx INTEGER PRIMARY KEY, head BLOB, sig BLOB);
+    """),
+    # M-16 face matching (optional add-on, ADR-0049/0050). Tables exist always and stay empty
+    # unless the module is opted in. fm_unrecognized_count deliberately has no template,
+    # embedding, hash or face-ID column (spec section 8).
+    (4, """
+    CREATE TABLE fm_state(k TEXT PRIMARY KEY, v TEXT);
+    CREATE TABLE fm_enrolled(person_id TEXT PRIMARY KEY, display_name BLOB, template BLOB, dek BLOB, model_id TEXT,
+        model_version TEXT, consent_id TEXT, consent_note TEXT, guardian_enrolled INTEGER, shot_count INTEGER,
+        angles_covered TEXT, baseline_confidence REAL, enrolled_at REAL, expires_at REAL);
+    CREATE TABLE fm_encounter(entry_id TEXT PRIMARY KEY, person_id TEXT REFERENCES fm_enrolled(person_id) ON DELETE CASCADE,
+        seen_at REAL, place BLOB, confidence REAL, expires_at REAL);
+    CREATE TABLE fm_unrecognized_count(place_tag TEXT, place BLOB, date TEXT, time_bucket INTEGER, count INTEGER, expires_at REAL,
+        PRIMARY KEY(place_tag, date, time_bucket));
+    """),
+    # Consent registry state (grants, withdrawals, expiry) so a withdrawal survives restart.
+    # body is sealed with the DB key (AES-GCM, AAD bound to the consent ID).
+    (5, """
+    CREATE TABLE consent_record(consent_id TEXT PRIMARY KEY, body BLOB NOT NULL, updated_utc REAL);
+    """),
+    # M-17 voice link (optional add-on to M-16 personal mode, ADR-0057). Tables exist always and stay
+    # empty unless M-17 is opted in. There is no audio column of any kind and nothing about unknown
+    # voices: vl_voice holds only sealed templates of enrolled people, vl_heard only their matches.
+    (6, """
+    CREATE TABLE vl_state(k TEXT PRIMARY KEY, v TEXT);
+    CREATE TABLE vl_voice(person_id TEXT PRIMARY KEY, template BLOB NOT NULL, model_id TEXT, dim INTEGER, consent_id TEXT,
+        windows INTEGER, speech_s REAL, enrolled_at REAL);
+    CREATE TABLE vl_heard(entry_id TEXT PRIMARY KEY, person_id TEXT, heard_at REAL, place BLOB, score REAL, face_agrees INTEGER,
+        expires_at REAL);
+    """),
+    # M-16/M-17 face photo (ADR-0057 decision 4): at most one per enrolled person with the "photo" consent
+    # scope, a JPEG face crop sealed with that person's DEK (AAD b"photo:" + person_id). Empty unless such a
+    # person is enrolled; nothing about strangers. Every M-16 erasure path deletes the row (verified wipe).
+    (7, """
+    CREATE TABLE fm_photo(person_id TEXT PRIMARY KEY REFERENCES fm_enrolled(person_id) ON DELETE CASCADE,
+        photo BLOB NOT NULL, created_at REAL);
+    """),
+]
+LATEST = MIGRATIONS[-1][0]
